@@ -78,34 +78,24 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
                     match process_single_chunk(chunk_idx, &wallets_clone) {
                         Ok(chunk_matches) => {
                             if chunk_matches.is_empty() {
-                                // Se chunk está vazio, pode ser fim dos dados
-                                // Verifica se realmente não há mais dados
-                                if let Ok(has_more) = check_has_more_data(chunk_idx) {
-                                    if !has_more {
-                                        break; // Fim dos dados
-                                    }
-                                }
+                                break; // Fim dos dados
                             }
 
-                            // Adiciona matches encontrados
-                            if !chunk_matches.is_empty() {
-                                let mut global_matches = matches_clone.lock().unwrap();
-                                global_matches.extend(chunk_matches.clone());
-                                let total_matches = global_matches.len();
-                                drop(global_matches);
+                            let mut global_matches = matches_clone.lock().unwrap();
+                            global_matches.extend(chunk_matches.clone());
+                            let total_matches = global_matches.len();
+                            drop(global_matches);
 
-                                let mut processed = processed_clone.lock().unwrap();
-                                *processed += 1;
-                                println!(
-                                    "✅ Chunk {} processado - {} matches locais, {} total",
-                                    chunk_idx,
-                                    chunk_matches.len(),
-                                    total_matches
-                                );
-                                drop(processed);
-                            }
+                            let mut processed = processed_clone.lock().unwrap();
+                            *processed += 1;
+                            println!(
+                                "✅ Chunk {} processado - {} matches, {} total",
+                                chunk_idx,
+                                chunk_matches.len(),
+                                total_matches
+                            );
+                            drop(processed);
 
-                            // Próximo chunk para esta thread
                             chunk_idx += MAX_THREADS;
                         }
                         Err(e) => {
@@ -166,19 +156,6 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<V
         .collect();
 
     Ok(matches)
-}
-
-fn check_has_more_data(chunk_idx: usize) -> Result<bool> {
-    let conn = Connection::open(ADDR_DB)?;
-    let offset = chunk_idx * CHUNK_SIZE;
-
-    let mut stmt = conn.prepare(&format!(
-        "SELECT 1 FROM addresses LIMIT 1 OFFSET {}",
-        offset
-    ))?;
-
-    let mut rows = stmt.query([])?;
-    Ok(rows.next()?.is_some())
 }
 
 use std::io;
