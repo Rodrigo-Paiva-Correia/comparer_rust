@@ -72,15 +72,33 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
             let processed_clone = Arc::clone(&processed_chunks);
 
             std::thread::spawn(move || {
+                // Abre uma conexão com o banco de endereços para esta thread
+                let mut conn = match Connection::open(ADDR_DB) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("⚠️  Falha ao abrir conexão do thread {}: {}", thread_id, e);
+                        return;
+                    }
+                };
+                if let Err(e) = conn.execute_batch(
+                    "PRAGMA journal_mode=WAL;
+                     PRAGMA synchronous=OFF;
+                     PRAGMA temp_store=MEMORY;
+                     PRAGMA cache_size=-25000;",
+                ) {
+                    eprintln!("⚠️  Falha ao configurar conexção do thread {}: {}", thread_id, e);
+                    return;
+                }
+
                 let mut chunk_idx = thread_id;
 
                 loop {
-                    match process_single_chunk(chunk_idx, &wallets_clone) {
+                    match process_single_chunk(chunk_idx, &wallets_clone, &mut conn) {
                         Ok(chunk_matches) => {
                             if chunk_matches.is_empty() {
                                 // Se chunk está vazio, pode ser fim dos dados
                                 // Verifica se realmente não há mais dados
-                                if let Ok(has_more) = check_has_more_data(chunk_idx) {
+                                if let Ok(has_more) = check_has_more_data(chunk_idx, &conn) {
                                     if !has_more {
                                         break; // Fim dos dados
                                     }
@@ -114,6 +132,8 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
                         }
                     }
                 }
+                // Fecha explicitamente a conexão ao final da thread
+                drop(conn);
             })
         })
         .collect();
@@ -130,15 +150,7 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
     Ok(final_matches)
 }
 
-fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<Vec<String>> {
-    let conn = Connection::open(ADDR_DB)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
-         PRAGMA cache_size=-25000;",
-    )?;
-
+fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, conn: &mut Connection) -> Result<Vec<String>> {
     let offset = chunk_idx * CHUNK_SIZE;
     let mut stmt = conn.prepare(&format!(
         "SELECT address FROM addresses LIMIT {} OFFSET {}",
@@ -168,8 +180,7 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<V
     Ok(matches)
 }
 
-fn check_has_more_data(chunk_idx: usize) -> Result<bool> {
-    let conn = Connection::open(ADDR_DB)?;
+fn check_has_more_data(chunk_idx: usize, conn: &Connection) -> Result<bool> {
     let offset = chunk_idx * CHUNK_SIZE;
 
     let mut stmt = conn.prepare(&format!(
