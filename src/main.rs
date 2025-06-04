@@ -98,7 +98,8 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
                             }
 
                             let mut global_matches = matches_clone.lock().unwrap();
-                            global_matches.extend(chunk_matches.clone());
+                            let chunk_len = chunk_matches.len();
+                            global_matches.extend(chunk_matches);
                             let total_matches = global_matches.len();
                             drop(global_matches);
 
@@ -107,7 +108,7 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
                             println!(
                                 "✅ Rowid {} processado - {} matches, {} total",
                                 last_rowid,
-                                chunk_matches.len(),
+                                chunk_len,
                                 total_matches
                             );
                             drop(processed);
