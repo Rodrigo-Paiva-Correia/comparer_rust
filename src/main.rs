@@ -7,6 +7,22 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+fn verify_table_exists(conn: &Connection, table: &str, db_path: &str) -> Result<()> {
+    let sql = format!("SELECT 1 FROM {} LIMIT 1", table);
+    match conn.prepare(&sql).and_then(|mut stmt| stmt.exists([])) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            eprintln!("❌ Table '{}' not found in {}", table, db_path);
+            Err(e)
+        }
+    }
+}
+
+fn verify_addresses_table(path: &str) -> Result<()> {
+    let conn = Connection::open(path)?;
+    verify_table_exists(&conn, "addresses", path)
+}
+
 const DEFAULT_WALLETS_DB: &str = "E:\\rust\\address_checker\\wallets3.db";
 const DEFAULT_ADDR_DB: &str = "E:\\rust\\get_addresses\\ethereum_addresses.db";
 const CHUNK_SIZE: usize = 50000; // Processa 50k endereços por vez
@@ -34,7 +50,10 @@ fn main() -> Result<()> {
     let wallets = load_wallets(&args.wallets_db)?;
     println!("📊 Wallets carregadas: {} endereços", wallets.len());
 
-    // 2. Processa em chunks sem saber o total
+    // 2. Verifica se a tabela de endereços existe
+    verify_addresses_table(&args.addr_db)?;
+
+    // 3. Processa em chunks sem saber o total
     let matches = process_all_chunks_streaming(&wallets, &args.addr_db)?;
 
     // 3. Relatório
@@ -55,10 +74,11 @@ fn main() -> Result<()> {
 
 fn load_wallets(path: &str) -> Result<HashSet<String>> {
     let conn = Connection::open(path)?;
+    verify_table_exists(&conn, "wallets", path)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=OFF;
+         PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-100000;",
     )?;
 
@@ -143,9 +163,9 @@ fn process_single_chunk(
 ) -> Result<Option<Vec<String>>> {
     let conn = Connection::open(addr_db)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=OFF;
+         PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-25000;",
     )?;
 
