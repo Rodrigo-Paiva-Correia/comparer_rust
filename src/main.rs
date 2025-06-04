@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     println!("📊 Wallets carregadas: {} endereços", wallets.len());
 
     // 2. Processa em chunks sem saber o total
-    let matches = process_all_chunks_streaming(&wallets)?;
+    let matches = process_all_chunks_streaming(Arc::clone(&wallets))?;
 
     // 3. Relatório
     let dt = t0.elapsed().as_secs_f64();
@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_wallets() -> Result<HashSet<String>> {
+fn load_wallets() -> Result<Arc<HashSet<String>>> {
     let conn = Connection::open(WALLETS_DB)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; 
@@ -56,19 +56,18 @@ fn load_wallets() -> Result<HashSet<String>> {
         wallets.insert(row.get::<_, String>(0)?);
     }
 
-    Ok(wallets)
+    Ok(Arc::new(wallets))
 }
 
-fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>> {
+fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<String>> {
     let all_matches = Arc::new(Mutex::new(Vec::new()));
-    let wallets_arc = Arc::new(wallets.clone());
     let processed_chunks = Arc::new(Mutex::new(0));
 
     // Processa chunks infinitamente até não haver mais dados
     let chunk_tasks: Vec<_> = (0..MAX_THREADS)
         .map(|thread_id| {
             let matches_clone = Arc::clone(&all_matches);
-            let wallets_clone = Arc::clone(&wallets_arc);
+            let wallets_clone = Arc::clone(&wallets);
             let processed_clone = Arc::clone(&processed_chunks);
 
             std::thread::spawn(move || {
