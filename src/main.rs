@@ -85,11 +85,11 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
                     return;
                 }
 
-                let mut chunk_idx = thread_id;
+                let mut last_rowid = (thread_id * CHUNK_SIZE) as i64;
 
                 loop {
-                    match process_single_chunk(chunk_idx, &wallets_clone, &conn) {
-                        Ok(chunk_matches) => {
+                    match process_single_chunk(last_rowid, &wallets_clone, &conn) {
+                        Ok((chunk_matches, next_rowid)) => {
                             if chunk_matches.is_empty() {
                                 break; // Fim dos dados
                             }
@@ -102,17 +102,21 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
                             let mut processed = processed_clone.lock().unwrap();
                             *processed += 1;
                             println!(
-                                "✅ Chunk {} processado - {} matches, {} total",
-                                chunk_idx,
+                                "✅ Rowid {} processado - {} matches, {} total",
+                                last_rowid,
                                 chunk_matches.len(),
                                 total_matches
                             );
                             drop(processed);
 
-                            chunk_idx += MAX_THREADS;
+                            if let Some(id) = next_rowid {
+                                last_rowid = id;
+                            } else {
+                                break;
+                            }
                         }
                         Err(e) => {
-                            eprintln!("⚠️  Erro no chunk {}: {}", chunk_idx, e);
+                            eprintln!("⚠️  Erro no rowid {}: {}", last_rowid, e);
                             break;
                         }
                     }
@@ -133,24 +137,31 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
     Ok(final_matches)
 }
 
-fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, conn: &Connection) -> Result<Vec<String>> {
+fn process_single_chunk(
+    last_rowid: i64,
+    wallets: &HashSet<String>,
+    conn: &Connection,
+) -> Result<(Vec<String>, Option<i64>)> {
 
-    let offset = chunk_idx * CHUNK_SIZE;
     let mut stmt = conn.prepare(
-        "SELECT address FROM addresses LIMIT ? OFFSET ?",
+        "SELECT rowid, address FROM addresses WHERE rowid > ? ORDER BY rowid LIMIT ?",
     )?;
 
-    let mut rows = stmt.query(rusqlite::params![CHUNK_SIZE as i64, offset as i64])?;
+    let mut rows = stmt.query(rusqlite::params![last_rowid, CHUNK_SIZE as i64])?;
     let mut chunk_addresses = Vec::new();
+    let mut new_last_rowid = None;
 
     // Carrega apenas um chunk pequeno na memória
     while let Some(row) = rows.next()? {
-        chunk_addresses.push(row.get::<_, String>(0)?);
+        let rowid: i64 = row.get(0)?;
+        let addr: String = row.get(1)?;
+        new_last_rowid = Some(rowid);
+        chunk_addresses.push(addr);
     }
 
     // Se chunk está vazio, retorna vazio
     if chunk_addresses.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
 
     // Processa chunk em paralelo
@@ -160,7 +171,7 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, conn: &Conn
         .cloned()
         .collect();
 
-    Ok(matches)
+    Ok((matches, new_last_rowid))
 }
 
 use std::io;
