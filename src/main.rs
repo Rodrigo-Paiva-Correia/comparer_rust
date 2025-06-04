@@ -93,11 +93,7 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Res
 
                 loop {
                     match process_single_chunk(chunk_idx, &wallets_clone, db_clone.as_str()) {
-                        Ok(chunk_matches) => {
-                            if chunk_matches.is_empty() {
-                                break; // Fim dos dados
-                            }
-
+                        Ok(Some(chunk_matches)) => {
                             let mut global_matches = matches_clone.lock().unwrap();
                             global_matches.extend(chunk_matches.clone());
                             let total_matches = global_matches.len();
@@ -114,6 +110,9 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Res
                             drop(processed);
 
                             chunk_idx += MAX_THREADS;
+                        }
+                        Ok(None) => {
+                            break; // Fim dos dados
                         }
                         Err(e) => {
                             eprintln!("⚠️  Erro no chunk {}: {}", chunk_idx, e);
@@ -137,7 +136,11 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Res
     Ok(final_matches)
 }
 
-fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
+fn process_single_chunk(
+    chunk_idx: usize,
+    wallets: &HashSet<String>,
+    addr_db: &str,
+) -> Result<Option<Vec<String>>> {
     let conn = Connection::open(addr_db)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; 
@@ -160,9 +163,9 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, addr_db: &s
         chunk_addresses.push(row.get::<_, String>(0)?);
     }
 
-    // Se chunk está vazio, retorna vazio
+    // Se chunk está vazio, não há mais linhas
     if chunk_addresses.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
 
     // Processa chunk em paralelo com comparação case-insensitive
@@ -172,7 +175,7 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, addr_db: &s
         .cloned()
         .collect();
 
-    Ok(matches)
+    Ok(Some(matches))
 }
 
 use std::io;
