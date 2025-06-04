@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, OpenFlags, Result};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
@@ -20,8 +20,18 @@ fn main() -> Result<()> {
     let wallets = load_wallets()?;
     println!("📊 Wallets carregadas: {} endereços", wallets.len());
 
-    // 2. Processa em chunks sem saber o total
-    let matches = process_all_chunks_streaming(&wallets)?;
+    // 2. Abre conexão única para base de endereços
+    let addr_conn = Connection::open_with_flags(
+        ADDR_DB,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    addr_conn.execute_batch(
+        "PRAGMA journal_mode=WAL;\n         PRAGMA synchronous=OFF;\n         PRAGMA temp_store=MEMORY;\n         PRAGMA cache_size=-25000;",
+    )?;
+    let addr_conn = Arc::new(Mutex::new(addr_conn));
+
+    // 3. Processa em chunks sem saber o total
+    let matches = process_all_chunks_streaming(&wallets, Arc::clone(&addr_conn))?;
 
     // 3. Relatório
     let dt = t0.elapsed().as_secs_f64();
@@ -60,10 +70,14 @@ fn load_wallets() -> Result<HashSet<String>> {
     Ok(wallets)
 }
 
-fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>> {
+fn process_all_chunks_streaming(
+    wallets: &HashSet<String>,
+    addr_conn: Arc<Mutex<Connection>>,
+) -> Result<Vec<String>> {
     let all_matches = Arc::new(Mutex::new(Vec::new()));
     let wallets_arc = Arc::new(wallets.clone());
     let processed_chunks = Arc::new(Mutex::new(0));
+    let conn_arc = Arc::clone(&addr_conn);
 
     // Processa chunks infinitamente até não haver mais dados
     let chunk_tasks: Vec<_> = (0..MAX_THREADS)
@@ -71,12 +85,13 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
             let matches_clone = Arc::clone(&all_matches);
             let wallets_clone = Arc::clone(&wallets_arc);
             let processed_clone = Arc::clone(&processed_chunks);
+            let conn_clone = Arc::clone(&conn_arc);
 
             std::thread::spawn(move || {
                 let mut chunk_idx = thread_id;
 
                 loop {
-                    match process_single_chunk(chunk_idx, &wallets_clone) {
+                    match process_single_chunk(chunk_idx, &wallets_clone, &conn_clone) {
                         Ok(chunk_matches) => {
                             if chunk_matches.is_empty() {
                                 break; // Fim dos dados
@@ -121,14 +136,12 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
     Ok(final_matches)
 }
 
-fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<Vec<String>> {
-    let conn = Connection::open(ADDR_DB)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
-         PRAGMA cache_size=-25000;",
-    )?;
+fn process_single_chunk(
+    chunk_idx: usize,
+    wallets: &HashSet<String>,
+    addr_conn: &Arc<Mutex<Connection>>,
+) -> Result<Vec<String>> {
+    let conn = addr_conn.lock().unwrap();
 
     let offset = chunk_idx * CHUNK_SIZE;
     let mut stmt = conn.prepare(&format!(
