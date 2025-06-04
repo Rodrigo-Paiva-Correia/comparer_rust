@@ -26,3 +26,7 @@ export WALLETS_DB=/caminho/para/wallets.db
 export ADDR_DB=/caminho/para/addresses.db
 cargo run --release
 ```
+
+## Licença
+
+Este projeto está licenciado sob os termos da [licença MIT](LICENSE).
