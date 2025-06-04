@@ -156,23 +156,11 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<V
     Ok(matches)
 }
 
-fn check_has_more_data(chunk_idx: usize) -> Result<bool> {
-    let conn = Connection::open(ADDR_DB)?;
-    let offset = chunk_idx * CHUNK_SIZE;
-
-    let mut stmt = conn.prepare(
-        "SELECT 1 FROM addresses LIMIT 1 OFFSET ?",
-    )?;
-
-    let mut rows = stmt.query(rusqlite::params![offset as i64])?;
-    Ok(rows.next()?.is_some())
-}
-
 use std::io;
 fn save_to_file(addrs: &[String]) -> io::Result<()> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+        .map_err(io::Error::other)?
         .as_secs();
 
     let mut f = File::create(format!("coincidencias_{ts}.txt"))?;
