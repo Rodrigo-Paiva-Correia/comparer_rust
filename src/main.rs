@@ -71,10 +71,24 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
             let processed_clone = Arc::clone(&processed_chunks);
 
             std::thread::spawn(move || {
+                let conn = match Connection::open(ADDR_DB) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("⚠️  Erro ao abrir conexão na thread {}: {}", thread_id, e);
+                        return;
+                    }
+                };
+                if let Err(e) = conn.execute_batch(
+                    "PRAGMA journal_mode=WAL;\n         PRAGMA synchronous=OFF;\n         PRAGMA temp_store=MEMORY;\n         PRAGMA cache_size=-25000;",
+                ) {
+                    eprintln!("⚠️  Erro aplicando PRAGMAs na thread {}: {}", thread_id, e);
+                    return;
+                }
+
                 let mut chunk_idx = thread_id;
 
                 loop {
-                    match process_single_chunk(chunk_idx, &wallets_clone) {
+                    match process_single_chunk(chunk_idx, &wallets_clone, &conn) {
                         Ok(chunk_matches) => {
                             if chunk_matches.is_empty() {
                                 break; // Fim dos dados
@@ -119,14 +133,7 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
     Ok(final_matches)
 }
 
-fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<Vec<String>> {
-    let conn = Connection::open(ADDR_DB)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
-         PRAGMA cache_size=-25000;",
-    )?;
+fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, conn: &Connection) -> Result<Vec<String>> {
 
     let offset = chunk_idx * CHUNK_SIZE;
     let mut stmt = conn.prepare(
