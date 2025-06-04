@@ -5,23 +5,45 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use clap::Parser;
 
-const WALLETS_DB: &str = "E:\\rust\\address_checker\\wallets3.db";
-const ADDR_DB: &str = "E:\\rust\\get_addresses\\ethereum_addresses.db";
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to the wallets SQLite database
+    #[arg(long)]
+    wallet_db: Option<String>,
+
+    /// Path to the addresses SQLite database
+    #[arg(long)]
+    addr_db: Option<String>,
+}
+
+const DEFAULT_WALLETS_DB: &str = "E:\\rust\\address_checker\\wallets3.db";
+const DEFAULT_ADDR_DB: &str = "E:\\rust\\get_addresses\\ethereum_addresses.db";
 const CHUNK_SIZE: usize = 50000; // Processa 50k endereços por vez
 const MAX_THREADS: usize = 4; // Limita threads simultâneas
 
 fn main() -> Result<()> {
+    let args = Args::parse();
+    let wallets_db = args
+        .wallet_db
+        .unwrap_or_else(|| DEFAULT_WALLETS_DB.to_string());
+    let addr_db = Arc::new(
+        args.addr_db
+            .unwrap_or_else(|| DEFAULT_ADDR_DB.to_string()),
+    );
+
     let t0 = Instant::now();
 
     println!("🚀 Iniciando verificação paralela de endereços...");
 
     // 1. Carrega apenas as wallets (dataset menor)
-    let wallets = load_wallets()?;
+    let wallets = load_wallets(&wallets_db)?;
     println!("📊 Wallets carregadas: {} endereços", wallets.len());
 
     // 2. Processa em chunks sem saber o total
-    let matches = process_all_chunks_streaming(&wallets)?;
+    let matches = process_all_chunks_streaming(&wallets, Arc::clone(&addr_db))?;
 
     // 3. Relatório
     let dt = t0.elapsed().as_secs_f64();
@@ -39,8 +61,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_wallets() -> Result<HashSet<String>> {
-    let conn = Connection::open(WALLETS_DB)?;
+fn load_wallets(db_path: &str) -> Result<HashSet<String>> {
+    let conn = Connection::open(db_path)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; 
          PRAGMA synchronous=OFF; 
@@ -59,7 +81,7 @@ fn load_wallets() -> Result<HashSet<String>> {
     Ok(wallets)
 }
 
-fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>> {
+fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: Arc<String>) -> Result<Vec<String>> {
     let all_matches = Arc::new(Mutex::new(Vec::new()));
     let wallets_arc = Arc::new(wallets.clone());
     let processed_chunks = Arc::new(Mutex::new(0));
@@ -70,12 +92,13 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
             let matches_clone = Arc::clone(&all_matches);
             let wallets_clone = Arc::clone(&wallets_arc);
             let processed_clone = Arc::clone(&processed_chunks);
+            let db_clone = Arc::clone(&addr_db);
 
             std::thread::spawn(move || {
                 let mut chunk_idx = thread_id;
 
                 loop {
-                    match process_single_chunk(chunk_idx, &wallets_clone) {
+                    match process_single_chunk(chunk_idx, &wallets_clone, Arc::clone(&db_clone)) {
                         Ok(chunk_matches) => {
                             if chunk_matches.is_empty() {
                                 break; // Fim dos dados
@@ -120,8 +143,8 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
     Ok(final_matches)
 }
 
-fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<Vec<String>> {
-    let conn = Connection::open(ADDR_DB)?;
+fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>, addr_db: Arc<String>) -> Result<Vec<String>> {
+    let conn = Connection::open(&*addr_db)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL; 
          PRAGMA synchronous=OFF; 
