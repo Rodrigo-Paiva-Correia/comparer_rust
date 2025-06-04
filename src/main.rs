@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, Result, Statement};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
@@ -88,10 +88,20 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
                     return;
                 }
 
+                let mut stmt = match conn.prepare_cached(
+                    "SELECT rowid, address FROM addresses WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("⚠️  Erro preparando consulta na thread {}: {}", thread_id, e);
+                        return;
+                    }
+                };
+
                 let mut last_rowid = (thread_id * CHUNK_SIZE) as i64;
 
                 loop {
-                    match process_single_chunk(last_rowid, &wallets_clone, &conn) {
+                    match process_single_chunk(last_rowid, &wallets_clone, &mut stmt) {
                         Ok((chunk_matches, next_rowid)) => {
                             if chunk_matches.is_empty() {
                                 break; // Fim dos dados
@@ -143,12 +153,8 @@ fn process_all_chunks_streaming(wallets: Arc<HashSet<String>>) -> Result<Vec<Str
 fn process_single_chunk(
     last_rowid: i64,
     wallets: &HashSet<String>,
-    conn: &Connection,
+    stmt: &mut Statement,
 ) -> Result<(Vec<String>, Option<i64>)> {
-
-    let mut stmt = conn.prepare(
-        "SELECT rowid, address FROM addresses WHERE rowid > ? ORDER BY rowid LIMIT ?",
-    )?;
 
     let mut rows = stmt.query(rusqlite::params![last_rowid, CHUNK_SIZE as i64])?;
     // Preallocate vector for chunk addresses to reduce reallocations
