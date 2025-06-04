@@ -5,11 +5,20 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::process;
 
 const WALLETS_DB: &str = "E:\\rust\\address_checker\\wallets3.db";
 const ADDR_DB: &str = "E:\\rust\\get_addresses\\ethereum_addresses.db";
 const CHUNK_SIZE: usize = 50000; // Processa 50k endereços por vez
 const MAX_THREADS: usize = 4; // Limita threads simultâneas
+
+fn check_table_exists(conn: &Connection, table: &str) {
+    let query = format!("SELECT 1 FROM {} LIMIT 1", table);
+    if let Err(e) = conn.query_row(&query, [], |_| Ok(())) {
+        eprintln!("❌ Tabela '{}' não encontrada: {}", table, e);
+        process::exit(1);
+    }
+}
 
 fn main() -> Result<()> {
     let t0 = Instant::now();
@@ -41,10 +50,11 @@ fn main() -> Result<()> {
 
 fn load_wallets() -> Result<HashSet<String>> {
     let conn = Connection::open(WALLETS_DB)?;
+    check_table_exists(&conn, "wallets");
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=OFF;
+         PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-100000;",
     )?;
 
@@ -123,10 +133,11 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>) -> Result<Vec<String>
 
 fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<Vec<String>> {
     let conn = Connection::open(ADDR_DB)?;
+    check_table_exists(&conn, "addresses");
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=OFF;
+         PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-25000;",
     )?;
 
