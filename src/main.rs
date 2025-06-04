@@ -53,7 +53,8 @@ fn load_wallets() -> Result<HashSet<String>> {
 
     let mut wallets = HashSet::new();
     while let Some(row) = rows.next()? {
-        wallets.insert(row.get::<_, String>(0)?);
+        // Normalize to lowercase to enable case-insensitive comparison
+        wallets.insert(row.get::<_, String>(0)?.to_lowercase());
     }
 
     Ok(wallets)
@@ -158,10 +159,10 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<V
         return Ok(Vec::new());
     }
 
-    // Processa chunk em paralelo
+    // Processa chunk em paralelo com comparação case-insensitive
     let matches: Vec<String> = chunk_addresses
         .par_iter()
-        .filter(|addr| wallets.contains(*addr))
+        .filter(|addr| wallets.contains(&addr.to_lowercase()))
         .cloned()
         .collect();
 
