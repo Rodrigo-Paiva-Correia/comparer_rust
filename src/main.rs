@@ -130,12 +130,11 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<V
     )?;
 
     let offset = chunk_idx * CHUNK_SIZE;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT address FROM addresses LIMIT {} OFFSET {}",
-        CHUNK_SIZE, offset
-    ))?;
+    let mut stmt = conn.prepare(
+        "SELECT address FROM addresses LIMIT ? OFFSET ?",
+    )?;
 
-    let mut rows = stmt.query([])?;
+    let mut rows = stmt.query(rusqlite::params![CHUNK_SIZE as i64, offset as i64])?;
     let mut chunk_addresses = Vec::new();
 
     // Carrega apenas um chunk pequeno na memória
@@ -156,6 +155,18 @@ fn process_single_chunk(chunk_idx: usize, wallets: &HashSet<String>) -> Result<V
         .collect();
 
     Ok(matches)
+}
+
+fn check_has_more_data(chunk_idx: usize) -> Result<bool> {
+    let conn = Connection::open(ADDR_DB)?;
+    let offset = chunk_idx * CHUNK_SIZE;
+
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM addresses LIMIT 1 OFFSET ?",
+    )?;
+
+    let mut rows = stmt.query(rusqlite::params![offset as i64])?;
+    Ok(rows.next()?.is_some())
 }
 
 use std::io;
