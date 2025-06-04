@@ -1,6 +1,6 @@
 use clap::Parser;
 use rayon::prelude::*;
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, OpenFlags, Result};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
@@ -34,14 +34,28 @@ fn main() -> Result<()> {
     let wallets = load_wallets(&args.wallets_db)?;
     println!("📊 Wallets carregadas: {} endereços", wallets.len());
 
-    // 2. Processa em chunks sem saber o total
-    let matches = process_all_chunks_streaming(&wallets, &args.addr_db)?;
+    // 2. Abre a conexão com o banco de endereços apenas uma vez
+    let addr_conn = Connection::open_with_flags(
+        &args.addr_db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    addr_conn.execute_batch(
+        "PRAGMA journal_mode=WAL;\
+         PRAGMA synchronous=OFF;\
+         PRAGMA temp_store=MEMORY;\
+         PRAGMA cache_size=-25000;",
+    )?;
+    verify_table_exists(&addr_conn, "addresses")?;
+    let addr_conn = Arc::new(Mutex::new(addr_conn));
 
-    // 3. Relatório
+    // 3. Processa em chunks sem saber o total
+    let matches = process_all_chunks_streaming(&wallets, Arc::clone(&addr_conn))?;
+
+    // 4. Relatório
     let dt = t0.elapsed().as_secs_f64();
     println!("🎯 Coincidências: {} | Tempo: {:.2}s", matches.len(), dt);
 
-    // 4. Salva resultado
+    // 5. Salva resultado
     if !matches.is_empty() {
         if let Err(e) = save_to_file(&matches) {
             eprintln!("⚠️  Falha ao salvar arquivo: {e}");
@@ -54,13 +68,14 @@ fn main() -> Result<()> {
 }
 
 fn load_wallets(path: &str) -> Result<HashSet<String>> {
-    let conn = Connection::open(path)?;
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=OFF;
+         PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-100000;",
     )?;
+    verify_table_exists(&conn, "wallets")?;
 
     let mut stmt = conn.prepare("SELECT address FROM wallets")?;
     let mut rows = stmt.query([])?;
@@ -74,10 +89,10 @@ fn load_wallets(path: &str) -> Result<HashSet<String>> {
     Ok(wallets)
 }
 
-fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
+fn process_all_chunks_streaming(wallets: &HashSet<String>, conn: Arc<Mutex<Connection>>) -> Result<Vec<String>> {
     let all_matches = Arc::new(Mutex::new(Vec::new()));
     let wallets_arc = Arc::new(wallets.clone());
-    let addr_db_arc = Arc::new(addr_db.to_string());
+    let conn_arc = Arc::clone(&conn);
     let processed_chunks = Arc::new(Mutex::new(0));
 
     // Processa chunks infinitamente até não haver mais dados
@@ -86,13 +101,13 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Res
             let matches_clone = Arc::clone(&all_matches);
             let wallets_clone = Arc::clone(&wallets_arc);
             let processed_clone = Arc::clone(&processed_chunks);
-            let db_clone = Arc::clone(&addr_db_arc);
+            let conn_clone = Arc::clone(&conn_arc);
 
             std::thread::spawn(move || {
                 let mut chunk_idx = thread_id;
 
                 loop {
-                    match process_single_chunk(chunk_idx, &wallets_clone, db_clone.as_str()) {
+                    match process_single_chunk(chunk_idx, &wallets_clone, &conn_clone) {
                         Ok(Some(chunk_matches)) => {
                             let mut global_matches = matches_clone.lock().unwrap();
                             global_matches.extend(chunk_matches.clone());
@@ -139,15 +154,9 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Res
 fn process_single_chunk(
     chunk_idx: usize,
     wallets: &HashSet<String>,
-    addr_db: &str,
+    conn_arc: &Arc<Mutex<Connection>>,
 ) -> Result<Option<Vec<String>>> {
-    let conn = Connection::open(addr_db)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL; 
-         PRAGMA synchronous=OFF; 
-         PRAGMA temp_store=MEMORY; 
-         PRAGMA cache_size=-25000;",
-    )?;
+    let conn = conn_arc.lock().unwrap();
 
     let offset = chunk_idx * CHUNK_SIZE;
     let mut stmt = conn.prepare(&format!(
@@ -162,6 +171,9 @@ fn process_single_chunk(
     while let Some(row) = rows.next()? {
         chunk_addresses.push(row.get::<_, String>(0)?);
     }
+    drop(rows);
+    drop(stmt);
+    drop(conn);
 
     // Se chunk está vazio, não há mais linhas
     if chunk_addresses.is_empty() {
@@ -195,4 +207,13 @@ fn save_to_file(addrs: &[String]) -> io::Result<()> {
 
     println!("💾 Resultado salvo em coincidencias_{ts}.txt");
     Ok(())
+}
+
+fn verify_table_exists(conn: &Connection, table: &str) -> Result<()> {
+    let query = format!("SELECT 1 FROM {table} LIMIT 1");
+    let mut stmt = conn.prepare(&query)?;
+    match stmt.query_row([], |_| Ok(())) {
+        Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
