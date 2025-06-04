@@ -48,10 +48,13 @@ fn load_wallets() -> Result<Arc<HashSet<String>>> {
          PRAGMA cache_size=-100000;",
     )?;
 
+    // Determine wallet count to preallocate HashSet
+    let count: usize = conn.query_row("SELECT COUNT(*) FROM wallets", [], |r| r.get(0))?;
+
     let mut stmt = conn.prepare("SELECT address FROM wallets")?;
     let mut rows = stmt.query([])?;
 
-    let mut wallets = HashSet::new();
+    let mut wallets = HashSet::with_capacity(count);
     while let Some(row) = rows.next()? {
         wallets.insert(row.get::<_, String>(0)?);
     }
@@ -148,7 +151,8 @@ fn process_single_chunk(
     )?;
 
     let mut rows = stmt.query(rusqlite::params![last_rowid, CHUNK_SIZE as i64])?;
-    let mut chunk_addresses = Vec::new();
+    // Preallocate vector for chunk addresses to reduce reallocations
+    let mut chunk_addresses = Vec::with_capacity(CHUNK_SIZE);
     let mut new_last_rowid = None;
 
     // Carrega apenas um chunk pequeno na memória
