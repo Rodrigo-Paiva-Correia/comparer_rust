@@ -2,6 +2,10 @@
 
 Ferramenta em Rust para verificar endereços de Ethereum em duas bases de dados SQLite.
 
+A partir da versão atual, a leitura da tabela `addresses` utiliza o campo
+`rowid` para percorrer os registros em blocos, evitando o custo de consultas com
+`OFFSET`.
+
 ## Uso
 
 Os caminhos padrões para os bancos são utilizados caso nenhuma opção seja informada. Eles são:
