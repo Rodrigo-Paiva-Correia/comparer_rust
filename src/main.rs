@@ -90,13 +90,14 @@ fn load_wallets(path: &str) -> Result<HashSet<String>> {
          PRAGMA cache_size=-100000;",
     )?;
 
-    let mut stmt = conn.prepare("SELECT address FROM wallets")?;
+    // Query normalized addresses directly from SQLite
+    let mut stmt = conn.prepare("SELECT lower(address) FROM wallets")?;
     let mut rows = stmt.query([])?;
 
     let mut wallets = HashSet::new();
     while let Some(row) = rows.next()? {
-        // Normalize to lowercase to enable case-insensitive comparison
-        wallets.insert(row.get::<_, String>(0)?.to_lowercase());
+        // Already in lowercase from the query
+        wallets.insert(row.get::<_, String>(0)?);
     }
 
     Ok(wallets)
@@ -124,15 +125,16 @@ fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Resu
                  PRAGMA cache_size=-25000;",
             )?;
 
+            // Normalize addresses to lowercase directly in the query
             let mut stmt = conn.prepare(
-                "SELECT address FROM addresses WHERE rowid > ? AND rowid <= ? ORDER BY rowid",
+                "SELECT lower(address) FROM addresses WHERE rowid > ? AND rowid <= ? ORDER BY rowid",
             )?;
             let mut rows = stmt.query(rusqlite::params![start, end])?;
 
             let mut matches = Vec::new();
             while let Some(row) = rows.next()? {
                 let addr: String = row.get(0)?;
-                if wallets.contains(&addr.to_lowercase()) {
+                if wallets.contains(&addr) {
                     matches.push(addr);
                 }
             }
