@@ -52,8 +52,8 @@ fn main() -> Result<()> {
     // 2. Verifica se a tabela de endereços existe
     verify_addresses_table(&args.addr_db)?;
 
-    // 3. Processa em chunks sem saber o total
-    let matches = process_all_chunks_streaming(&wallets, &args.addr_db)?;
+    // 3. Processa em chunks utilizando múltiplas conexões ao SQLite
+    let matches = process_all_chunks_parallel(&wallets, &args.addr_db)?;
 
     // 3. Relatório
     let dt = t0.elapsed().as_secs_f64();
@@ -93,51 +93,55 @@ fn load_wallets(path: &str) -> Result<HashSet<String>> {
     Ok(wallets)
 }
 
-fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
-    let conn = Connection::open(addr_db)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=OFF;
-         PRAGMA temp_store=MEMORY;
-         PRAGMA cache_size=-25000;",
-    )?;
 
-    let mut all_matches = Vec::new();
-    let mut last_rowid: i64 = 0;
+fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
+    // Descobre o maior rowid para determinar as faixas
+    let max_rowid: i64 = {
+        let conn = Connection::open(addr_db)?;
+        conn.query_row("SELECT MAX(rowid) FROM addresses", [], |row| row.get(0))?
+    };
 
-    loop {
-        let mut stmt = conn.prepare(
-            "SELECT rowid, address FROM addresses WHERE rowid > ? ORDER BY rowid LIMIT ?",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![last_rowid, CHUNK_SIZE as i64])?;
+    // Gera os limites iniciais de cada faixa
+    let starts: Vec<i64> = (0..=max_rowid).step_by(CHUNK_SIZE).collect();
 
-        let mut chunk_addresses = Vec::new();
-        while let Some(row) = rows.next()? {
-            last_rowid = row.get::<_, i64>(0)?;
-            chunk_addresses.push(row.get::<_, String>(1)?);
-        }
+    // Cada faixa é processada em paralelo, abrindo uma conexão própria
+    let chunk_results: Result<Vec<Vec<String>>> = starts
+        .into_par_iter()
+        .map(|start| {
+            let end = start + CHUNK_SIZE as i64;
+            let conn = Connection::open(addr_db)?;
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=OFF;
+                 PRAGMA temp_store=MEMORY;
+                 PRAGMA cache_size=-25000;",
+            )?;
 
-        if chunk_addresses.is_empty() {
-            break;
-        }
+            let mut stmt = conn.prepare(
+                "SELECT address FROM addresses WHERE rowid > ? AND rowid <= ? ORDER BY rowid",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![start, end])?;
 
-        let matches: Vec<String> = chunk_addresses
-            .par_iter()
-            .filter(|addr| wallets.contains(&addr.to_lowercase()))
-            .cloned()
-            .collect();
+            let mut matches = Vec::new();
+            while let Some(row) = rows.next()? {
+                let addr: String = row.get(0)?;
+                if wallets.contains(&addr.to_lowercase()) {
+                    matches.push(addr);
+                }
+            }
 
-        all_matches.extend(matches);
-    }
+            Ok(matches)
+        })
+        .collect();
 
-    Ok(all_matches)
+    Ok(chunk_results?.into_iter().flatten().collect())
 }
 
 use std::io;
 fn save_to_file(addrs: &[String]) -> io::Result<()> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+        .map_err(io::Error::other)?
         .as_secs();
 
     let mut f = File::create(format!("coincidencias_{ts}.txt"))?;
