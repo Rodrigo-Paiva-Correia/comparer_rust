@@ -25,7 +25,7 @@ fn verify_addresses_table(path: &str) -> Result<()> {
 
 const DEFAULT_WALLETS_DB: &str = "E:\\rust\\address_checker\\wallets8.db";
 const DEFAULT_ADDR_DB: &str = "E:\\rust\\get_addresses\\ethereum_addresses.db";
-const CHUNK_SIZE: usize = 50000; // Processa 50k endereços por vez
+const DEFAULT_CHUNK_SIZE: usize = 50000; // Processa 50k endereços por vez
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -37,6 +37,10 @@ struct Args {
     /// Caminho para o banco de endereços
     #[arg(long, env = "ADDR_DB", default_value = DEFAULT_ADDR_DB)]
     addr_db: String,
+
+    /// Tamanho dos blocos de leitura da tabela de endereços
+    #[arg(long, env = "CHUNK_SIZE", default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
 }
 
 fn main() -> Result<()> {
@@ -53,7 +57,7 @@ fn main() -> Result<()> {
     verify_addresses_table(&args.addr_db)?;
 
     // 3. Processa em chunks utilizando múltiplas conexões ao SQLite
-    let matches = process_all_chunks_parallel(&wallets, &args.addr_db)?;
+    let matches = process_all_chunks_parallel(&wallets, &args.addr_db, args.chunk_size)?;
 
     // 3. Relatório
     let dt = t0.elapsed().as_secs_f64();
@@ -93,8 +97,11 @@ fn load_wallets(path: &str) -> Result<HashSet<String>> {
     Ok(wallets)
 }
 
-
-fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
+fn process_all_chunks_parallel(
+    wallets: &HashSet<String>,
+    addr_db: &str,
+    chunk_size: usize,
+) -> Result<Vec<String>> {
     // Descobre o maior rowid para determinar as faixas
     let max_rowid: i64 = {
         let conn = Connection::open(addr_db)?;
@@ -102,13 +109,13 @@ fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Resu
     };
 
     // Gera os limites iniciais de cada faixa
-    let starts: Vec<i64> = (0..=max_rowid).step_by(CHUNK_SIZE).collect();
+    let starts: Vec<i64> = (0..=max_rowid).step_by(chunk_size).collect();
 
     // Cada faixa é processada em paralelo, abrindo uma conexão própria
     let chunk_results: Result<Vec<Vec<String>>> = starts
         .into_par_iter()
         .map(|start| {
-            let end = start + CHUNK_SIZE as i64;
+            let end = start + chunk_size as i64;
             let conn = Connection::open(addr_db)?;
             conn.execute_batch(
                 "PRAGMA journal_mode=WAL;
