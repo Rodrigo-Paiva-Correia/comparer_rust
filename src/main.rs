@@ -1,6 +1,6 @@
 use clap::Parser;
 use rayon::prelude::*;
-use rusqlite::{Connection, OpenFlags, Result};
+use rusqlite::{Connection, Result};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
@@ -18,22 +18,12 @@ fn verify_table_exists(conn: &Connection, table: &str, db_path: &str) -> Result<
     }
 }
 
-fn open_read_only_shared(path: &str) -> Result<Connection> {
-    Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_SHARED_CACHE,
-    )
-}
-
 fn verify_addresses_table(path: &str) -> Result<()> {
-    let conn = open_read_only_shared(path)?;
+    let conn = Connection::open(path)?;
     verify_table_exists(&conn, "addresses", path)
 }
 
-const DEFAULT_WALLETS_DB: &str = "E:\\rust\\address_checker\\wallets3.db";
+const DEFAULT_WALLETS_DB: &str = "E:\\rust\\address_checker\\wallets8.db";
 const DEFAULT_ADDR_DB: &str = "E:\\rust\\get_addresses\\ethereum_addresses.db";
 const CHUNK_SIZE: usize = 50000; // Processa 50k endereços por vez
 
@@ -82,31 +72,32 @@ fn main() -> Result<()> {
 }
 
 fn load_wallets(path: &str) -> Result<HashSet<String>> {
-    let conn = open_read_only_shared(path)?;
+    let conn = Connection::open(path)?;
     verify_table_exists(&conn, "wallets", path)?;
     conn.execute_batch(
-        "PRAGMA synchronous=OFF;
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=OFF;
          PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-100000;",
     )?;
 
-    // Query normalized addresses directly from SQLite
-    let mut stmt = conn.prepare("SELECT lower(address) FROM wallets")?;
+    let mut stmt = conn.prepare("SELECT address FROM wallets")?;
     let mut rows = stmt.query([])?;
 
     let mut wallets = HashSet::new();
     while let Some(row) = rows.next()? {
-        // Already in lowercase from the query
-        wallets.insert(row.get::<_, String>(0)?);
+        // Normalize to lowercase to enable case-insensitive comparison
+        wallets.insert(row.get::<_, String>(0)?.to_lowercase());
     }
 
     Ok(wallets)
 }
 
+
 fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
     // Descobre o maior rowid para determinar as faixas
     let max_rowid: i64 = {
-        let conn = open_read_only_shared(addr_db)?;
+        let conn = Connection::open(addr_db)?;
         conn.query_row("SELECT MAX(rowid) FROM addresses", [], |row| row.get(0))?
     };
 
@@ -118,23 +109,23 @@ fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Resu
         .into_par_iter()
         .map(|start| {
             let end = start + CHUNK_SIZE as i64;
-            let conn = open_read_only_shared(addr_db)?;
+            let conn = Connection::open(addr_db)?;
             conn.execute_batch(
-                "PRAGMA synchronous=OFF;
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=OFF;
                  PRAGMA temp_store=MEMORY;
                  PRAGMA cache_size=-25000;",
             )?;
 
-            // Normalize addresses to lowercase directly in the query
             let mut stmt = conn.prepare(
-                "SELECT lower(address) FROM addresses WHERE rowid > ? AND rowid <= ? ORDER BY rowid",
+                "SELECT address FROM addresses WHERE rowid > ? AND rowid <= ? ORDER BY rowid",
             )?;
             let mut rows = stmt.query(rusqlite::params![start, end])?;
 
             let mut matches = Vec::new();
             while let Some(row) = rows.next()? {
                 let addr: String = row.get(0)?;
-                if wallets.contains(&addr) {
+                if wallets.contains(&addr.to_lowercase()) {
                     matches.push(addr);
                 }
             }
