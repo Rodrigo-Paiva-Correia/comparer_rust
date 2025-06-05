@@ -1,6 +1,6 @@
 use clap::Parser;
 use rayon::prelude::*;
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, OpenFlags, Result};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
@@ -18,8 +18,18 @@ fn verify_table_exists(conn: &Connection, table: &str, db_path: &str) -> Result<
     }
 }
 
+fn open_read_only_shared(path: &str) -> Result<Connection> {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_SHARED_CACHE,
+    )
+}
+
 fn verify_addresses_table(path: &str) -> Result<()> {
-    let conn = Connection::open(path)?;
+    let conn = open_read_only_shared(path)?;
     verify_table_exists(&conn, "addresses", path)
 }
 
@@ -72,11 +82,10 @@ fn main() -> Result<()> {
 }
 
 fn load_wallets(path: &str) -> Result<HashSet<String>> {
-    let conn = Connection::open(path)?;
+    let conn = open_read_only_shared(path)?;
     verify_table_exists(&conn, "wallets", path)?;
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA synchronous=OFF;
+        "PRAGMA synchronous=OFF;
          PRAGMA temp_store=MEMORY;
          PRAGMA cache_size=-100000;",
     )?;
@@ -93,11 +102,10 @@ fn load_wallets(path: &str) -> Result<HashSet<String>> {
     Ok(wallets)
 }
 
-
 fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
     // Descobre o maior rowid para determinar as faixas
     let max_rowid: i64 = {
-        let conn = Connection::open(addr_db)?;
+        let conn = open_read_only_shared(addr_db)?;
         conn.query_row("SELECT MAX(rowid) FROM addresses", [], |row| row.get(0))?
     };
 
@@ -109,10 +117,9 @@ fn process_all_chunks_parallel(wallets: &HashSet<String>, addr_db: &str) -> Resu
         .into_par_iter()
         .map(|start| {
             let end = start + CHUNK_SIZE as i64;
-            let conn = Connection::open(addr_db)?;
+            let conn = open_read_only_shared(addr_db)?;
             conn.execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=OFF;
+                "PRAGMA synchronous=OFF;
                  PRAGMA temp_store=MEMORY;
                  PRAGMA cache_size=-25000;",
             )?;
