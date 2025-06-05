@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use rusqlite::{Connection, Result};
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Write, BufWriter};
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -52,19 +52,25 @@ fn main() -> Result<()> {
     // 2. Verifica se a tabela de endereços existe
     verify_addresses_table(&args.addr_db)?;
 
-    // 3. Processa em chunks sem saber o total
-    let matches = process_all_chunks_streaming(&wallets, &args.addr_db)?;
+    // 3. Arquivo de saída para salvar coincidências conforme são encontradas
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs();
+    let out_path = format!("coincidencias_{ts}.txt");
+    let mut writer = BufWriter::new(File::create(&out_path).expect("falha ao criar arquivo"));
+    writeln!(writer, "ENDEREÇOS ETHEREUM COINCIDENTES").expect("falha ao escrever cabecalho");
 
-    // 3. Relatório
+    // 4. Processa em chunks sem saber o total
+    let total_matches = process_all_chunks_streaming(&wallets, &args.addr_db, &mut writer)?;
+    writer.flush().expect("falha ao flush no arquivo");
+
+    println!("💾 Resultado salvo em {out_path}");
+
+    // 5. Relatório final
     let dt = t0.elapsed().as_secs_f64();
-    println!("🎯 Coincidências: {} | Tempo: {:.2}s", matches.len(), dt);
-
-    // 4. Salva resultado
-    if !matches.is_empty() {
-        if let Err(e) = save_to_file(&matches) {
-            eprintln!("⚠️  Falha ao salvar arquivo: {e}");
-        }
-    } else {
+    println!("🎯 Coincidências: {} | Tempo: {:.2}s", total_matches, dt);
+    if total_matches == 0 {
         println!("ℹ️  Nenhuma coincidência encontrada");
     }
 
@@ -93,7 +99,11 @@ fn load_wallets(path: &str) -> Result<HashSet<String>> {
     Ok(wallets)
 }
 
-fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Result<Vec<String>> {
+fn process_all_chunks_streaming<W: Write>(
+    wallets: &HashSet<String>,
+    addr_db: &str,
+    writer: &mut W,
+) -> Result<usize> {
     let conn = Connection::open(addr_db)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
@@ -102,8 +112,9 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Res
          PRAGMA cache_size=-25000;",
     )?;
 
-    let mut all_matches = Vec::new();
+    let mut match_count = 0usize;
     let mut last_rowid: i64 = 0;
+    let mut chunk_idx = 0usize;
 
     loop {
         let mut stmt = conn.prepare(
@@ -127,27 +138,26 @@ fn process_all_chunks_streaming(wallets: &HashSet<String>, addr_db: &str) -> Res
             .cloned()
             .collect();
 
-        all_matches.extend(matches);
+        for addr in &matches {
+            match_count += 1;
+            println!("🎯 Coincidência encontrada: {}", addr);
+            if let Err(e) = writeln!(writer, "{}. {}", match_count, addr) {
+                eprintln!("⚠️  Falha ao escrever no arquivo: {e}");
+            }
+        }
+
+        println!(
+            "✅ Chunk {} processado: {} endereços, {} coincidências totais",
+            chunk_idx,
+            chunk_addresses.len(),
+            match_count
+        );
+        if let Err(e) = writer.flush() {
+            eprintln!("⚠️  Falha ao salvar chunk no arquivo: {e}");
+        }
+        chunk_idx += 1;
     }
 
-    Ok(all_matches)
+    Ok(match_count)
 }
 
-use std::io;
-fn save_to_file(addrs: &[String]) -> io::Result<()> {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-        .as_secs();
-
-    let mut f = File::create(format!("coincidencias_{ts}.txt"))?;
-    writeln!(f, "ENDEREÇOS ETHEREUM COINCIDENTES")?;
-    writeln!(f, "Total: {}\n", addrs.len())?;
-
-    for (i, addr) in addrs.iter().enumerate() {
-        writeln!(f, "{}. {}", i + 1, addr)?;
-    }
-
-    println!("💾 Resultado salvo em coincidencias_{ts}.txt");
-    Ok(())
-}
