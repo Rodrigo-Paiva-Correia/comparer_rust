@@ -32,6 +32,10 @@ export ADDR_DB=/caminho/para/addresses.db
 cargo run --release
 ```
 
+Também é possível controlar o número de linhas processadas em cada faixa da
+tabela `addresses` pelo argumento `--chunk-size` ou pela variável de ambiente
+`CHUNK_SIZE`. O valor padrão é 50000.
+
 ## Licença
 
 Este projeto está licenciado sob os termos da [licença MIT](LICENSE).
